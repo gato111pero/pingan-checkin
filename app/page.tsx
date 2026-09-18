@@ -145,7 +145,24 @@ export default function Home() {
         return;
       }
       setMsg('✅ 签到成功！');
-      await fetchStatus(id);
+      if (data.lastCheckin) {
+        // 用签到接口返回的时间戳乐观更新，避免读延迟导致「未签到」闪烁
+        setStatus((prev) =>
+          prev
+            ? {
+                ...prev,
+                lastCheckin: data.lastCheckin,
+                alerted: false,
+                safeUntil: new Date(
+                  new Date(data.lastCheckin).getTime() + 48 * 3600_000
+                ).toISOString(),
+                hoursLeft: 48,
+              }
+            : prev
+        );
+      } else {
+        await fetchStatus(id);
+      }
     } catch {
       setError('网络错误，请稍后重试');
     } finally {
