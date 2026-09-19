@@ -1,0 +1,11 @@
+{
+  "databaseUrl": "postgresql://user:password@host/dbname?sslmode=require",
+  "smtp": {
+    "host": "smtp.qq.com",
+    "port": 465,
+    "secure": true,
+    "user": "your@qq.com",
+    "pass": "你的授权码",
+    "from": "your@qq.com"
+  }
+}

@@ -130,9 +130,21 @@ export default function Home() {
 
   async function handleCheckin() {
     if (!id) return;
-    setBusy(true);
     setError('');
-    setMsg('');
+    setMsg('✅ 签到成功！');
+    const prevStatus = status;
+    // 立即乐观更新，反馈无需等待接口返回
+    setStatus((prev) =>
+      prev
+        ? {
+            ...prev,
+            lastCheckin: new Date().toISOString(),
+            alerted: false,
+            safeUntil: new Date(Date.now() + 48 * 3600_000).toISOString(),
+            hoursLeft: 48,
+          }
+        : prev
+    );
     try {
       const res = await fetch('/api/checkin', {
         method: 'POST',
@@ -141,32 +153,16 @@ export default function Home() {
       });
       const data = await res.json();
       if (data.error) {
-        setError(data.error);
-        return;
+        throw new Error(data.error);
       }
-      setMsg('✅ 签到成功！');
+      // 用服务器返回的时间戳校正
       if (data.lastCheckin) {
-        // 用签到接口返回的时间戳乐观更新，避免读延迟导致「未签到」闪烁
-        setStatus((prev) =>
-          prev
-            ? {
-                ...prev,
-                lastCheckin: data.lastCheckin,
-                alerted: false,
-                safeUntil: new Date(
-                  new Date(data.lastCheckin).getTime() + 48 * 3600_000
-                ).toISOString(),
-                hoursLeft: 48,
-              }
-            : prev
-        );
-      } else {
-        await fetchStatus(id);
+        setStatus((prev) => (prev ? { ...prev, lastCheckin: data.lastCheckin } : prev));
       }
-    } catch {
-      setError('网络错误，请稍后重试');
-    } finally {
-      setBusy(false);
+    } catch (e) {
+      setStatus(prevStatus);
+      setMsg('');
+      setError((e as Error).message || '网络错误，请稍后重试');
     }
   }
 
