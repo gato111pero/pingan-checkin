@@ -25,10 +25,14 @@ function fmt(dateStr: string | null): string {
 
 function fmtCountdown(hours: number): string {
   if (hours <= 0) return '已逾期';
-  const h = Math.floor(hours);
-  const m = Math.round((hours - h) * 60);
-  if (h >= 24) return `${Math.floor(h / 24)} 天 ${h % 24} 小时`;
-  return `${h} 小时 ${m} 分`;
+  const totalSec = Math.floor(hours * 3600);
+  const d = Math.floor(totalSec / 86400);
+  const h = Math.floor((totalSec % 86400) / 3600);
+  const m = Math.floor((totalSec % 3600) / 60);
+  const s = totalSec % 60;
+  if (d >= 1) return `${d} 天 ${h} 小时 ${m} 分`;
+  if (h >= 1) return `${h} 小时 ${m} 分 ${s} 秒`;
+  return `${m} 分 ${s} 秒`;
 }
 
 export default function Home() {
@@ -38,6 +42,7 @@ export default function Home() {
   const [error, setError] = useState('');
   const [msg, setMsg] = useState('');
   const [busy, setBusy] = useState(false);
+  const [now, setNow] = useState(() => Date.now());
 
   // 表单状态
   const [name, setName] = useState('');
@@ -83,6 +88,12 @@ export default function Home() {
       setPhase('setup');
     }
   }, [fetchStatus]);
+
+  // 每秒刷新一次，驱动倒计时实时走动
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, []);
 
   function setEmailAt(i: number, value: string) {
     setEmails((prev) => {
@@ -266,6 +277,10 @@ export default function Home() {
     );
   }
 
+  const liveHours = status?.safeUntil
+    ? Math.max(0, (new Date(status.safeUntil).getTime() - now) / 3600000)
+    : status?.hoursLeft ?? 0;
+
   return (
     <div className="container">
       <div className="header">
@@ -346,11 +361,11 @@ export default function Home() {
 
             <div
               className={`countdown ${
-                status.alerted ? 'danger' : status.hoursLeft <= 12 ? 'warn' : 'safe'
+                status.alerted ? 'danger' : liveHours <= 12 ? 'warn' : 'safe'
               }`}
             >
               <span className="big">
-                {status.alerted ? '已触发预警' : fmtCountdown(status.hoursLeft)}
+                {status.alerted ? '已触发预警' : fmtCountdown(liveHours)}
               </span>
               {!status.alerted && '距离触发预警剩余时间'}
             </div>

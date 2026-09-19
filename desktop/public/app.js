@@ -20,10 +20,14 @@ function fmt(dateStr) {
 
 function fmtCountdown(hours) {
   if (hours <= 0) return '已逾期';
-  const h = Math.floor(hours);
-  const m = Math.round((hours - h) * 60);
-  if (h >= 24) return `${Math.floor(h / 24)} 天 ${h % 24} 小时`;
-  return `${h} 小时 ${m} 分`;
+  const totalSec = Math.floor(hours * 3600);
+  const d = Math.floor(totalSec / 86400);
+  const h = Math.floor((totalSec % 86400) / 3600);
+  const m = Math.floor((totalSec % 3600) / 60);
+  const s = totalSec % 60;
+  if (d >= 1) return `${d} 天 ${h} 小时 ${m} 分`;
+  if (h >= 1) return `${h} 小时 ${m} 分 ${s} 秒`;
+  return `${m} 分 ${s} 秒`;
 }
 
 function setBanner(type, text) {
@@ -234,9 +238,9 @@ function renderDashboard() {
   appEl.innerHTML = `
     <div class="card">
       ${s.alerted ? '<div class="alert-banner">⚠️ 已连续两天未签到，系统已向联系人发送预警邮件。签到后将解除预警。</div>' : ''}
-      <div class="countdown ${countdownClass}">
-        <span class="big">${countdownText}</span>
-        ${s.alerted ? '' : '距离触发预警剩余时间'}
+      <div class="countdown ${countdownClass}" id="countdown">
+        <span class="big" id="countdown-big">${countdownText}</span>
+        <span id="countdown-label">${s.alerted ? '' : '距离触发预警剩余时间'}</span>
       </div>
       <button class="btn checkin-btn" id="checkin-btn" ${state.busy ? 'disabled' : ''}>
         ${state.busy ? '签到中…' : '✅ 我今日平安，签到'}
@@ -309,6 +313,22 @@ function render() {
   }
 }
 
+function tick() {
+  const bigEl = document.getElementById('countdown-big');
+  const cd = document.getElementById('countdown');
+  if (!bigEl || !cd || !state.status) return;
+  if (state.status.alerted) {
+    bigEl.textContent = '已触发预警';
+    cd.className = 'countdown danger';
+    return;
+  }
+  const safeUntil = state.status.safeUntil ? new Date(state.status.safeUntil).getTime() : null;
+  if (!safeUntil) return;
+  const hoursLeft = Math.max(0, (safeUntil - Date.now()) / 3600000);
+  bigEl.textContent = fmtCountdown(hoursLeft);
+  cd.className = 'countdown ' + (hoursLeft <= 0 ? 'danger' : hoursLeft <= 12 ? 'warn' : 'safe');
+}
+
 function init() {
   const id = localStorage.getItem(STORAGE_KEY);
   if (id) {
@@ -330,3 +350,4 @@ function init() {
 }
 
 init();
+setInterval(tick, 1000);
