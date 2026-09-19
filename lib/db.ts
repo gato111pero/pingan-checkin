@@ -23,6 +23,8 @@ export async function ensureTable(): Promise<void> {
     tableReady = db`
       CREATE TABLE IF NOT EXISTS users (
         id TEXT PRIMARY KEY,
+        email TEXT UNIQUE,
+        password_hash TEXT,
         name TEXT NOT NULL DEFAULT '',
         emails TEXT NOT NULL DEFAULT '[]',
         last_checkin TIMESTAMPTZ,
@@ -30,7 +32,23 @@ export async function ensureTable(): Promise<void> {
         alerted BOOLEAN NOT NULL DEFAULT false,
         alert_sent_at TIMESTAMPTZ
       )
-    `.then(() => undefined);
+    `
+      .then(() => db`ALTER TABLE users ADD COLUMN IF NOT EXISTS email TEXT`)
+      .then(() => db`ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash TEXT`)
+      .then(() =>
+        db`
+          CREATE TABLE IF NOT EXISTS sessions (
+            token TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+          )
+        `
+      )
+      .then(() => undefined)
+      .catch((e) => {
+        tableReady = null; // 失败则允许下次重试
+        throw e;
+      });
   }
   return tableReady;
 }

@@ -2,6 +2,7 @@ const express = require('express');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
+const bcrypt = require('bcryptjs');
 const { neon } = require('@neondatabase/serverless');
 const nodemailer = require('nodemailer');
 
@@ -39,6 +40,8 @@ function ensureTable() {
     tableReady = sql`
       CREATE TABLE IF NOT EXISTS users (
         id TEXT PRIMARY KEY,
+        email TEXT UNIQUE,
+        password_hash TEXT,
         name TEXT NOT NULL DEFAULT '',
         emails TEXT NOT NULL DEFAULT '[]',
         last_checkin TIMESTAMPTZ,
@@ -46,12 +49,32 @@ function ensureTable() {
         alerted BOOLEAN NOT NULL DEFAULT false,
         alert_sent_at TIMESTAMPTZ
       )
-    `.then(() => undefined);
+    `
+      .then(() => sql`ALTER TABLE users ADD COLUMN IF NOT EXISTS email TEXT`)
+      .then(() => sql`ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash TEXT`)
+      .then(() =>
+        sql`
+          CREATE TABLE IF NOT EXISTS sessions (
+            token TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+          )
+        `
+      )
+      .then(() => undefined)
+      .catch((e) => {
+        tableReady = null; // 失败则允许下次重试
+        throw e;
+      });
   }
   return tableReady;
 }
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+function isValidEmail(email) {
+  return EMAIL_RE.test(email);
+}
+
 function normalizeEmails(input) {
   const raw = Array.isArray(input) ? input.map(String) : [];
   const seen = new Set();
@@ -68,6 +91,10 @@ function normalizeEmails(input) {
   if (result.length === 0) throw new Error('请至少填写一个联系人邮箱');
   if (result.length > 3) throw new Error('最多只能设置 3 个联系人邮箱');
   return result;
+}
+
+function generateToken() {
+  return crypto.randomBytes(32).toString('hex');
 }
 
 const transporter = nodemailer.createTransport({
@@ -98,29 +125,75 @@ async function handle(fn, req, res) {
   }
 }
 
-app.post('/api/setup', (req, res) =>
+// 认证：从 Authorization 头提取 token，查找对应用户
+async function getUserByToken(req) {
+  const auth = req.headers['authorization'] || '';
+  const token = auth.startsWith('Bearer ') ? auth.slice(7).trim() : '';
+  if (!token) return null;
+  await ensureTable();
+  const rows = await sql`
+    SELECT u.* FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token = ${token}
+  `;
+  return rows.length ? rows[0] : null;
+}
+
+app.post('/api/register', (req, res) =>
   handle(async () => {
-    const body = req.body || {};
-    const name = String(body.name || '').trim().slice(0, 50);
-    const emails = normalizeEmails(body.emails);
-    const id = crypto.randomUUID();
+    const email = String((req.body || {}).email || '').trim().toLowerCase();
+    const password = String((req.body || {}).password || '');
+    if (!isValidEmail(email)) return res.status(400).json({ error: '邮箱格式不正确' });
+    if (password.length < 6) return res.status(400).json({ error: '密码至少 6 位' });
     await ensureTable();
-    await sql`INSERT INTO users (id, name, emails, created_at) VALUES (${id}, ${name}, ${JSON.stringify(emails)}, now())`;
-    res.json({ id, name, emails });
+    const existing = await sql`SELECT id FROM users WHERE email = ${email}`;
+    if (existing.length > 0) return res.status(409).json({ error: '该邮箱已注册，请直接登录' });
+    const id = crypto.randomUUID();
+    const passwordHash = await bcrypt.hash(password, 10);
+    await sql`INSERT INTO users (id, email, password_hash, created_at) VALUES (${id}, ${email}, ${passwordHash}, now())`;
+    const token = generateToken();
+    await sql`INSERT INTO sessions (token, user_id, created_at) VALUES (${token}, ${id}, now())`;
+    res.json({ token, user: { id, email, name: '', emails: [] } });
+  }, req, res)
+);
+
+app.post('/api/login', (req, res) =>
+  handle(async () => {
+    const email = String((req.body || {}).email || '').trim().toLowerCase();
+    const password = String((req.body || {}).password || '');
+    if (!isValidEmail(email) || !password) return res.status(400).json({ error: '请输入邮箱和密码' });
+    await ensureTable();
+    const rows = await sql`SELECT * FROM users WHERE email = ${email}`;
+    if (rows.length === 0) return res.status(401).json({ error: '邮箱或密码错误' });
+    const user = rows[0];
+    const ok = await bcrypt.compare(password, user.password_hash || '');
+    if (!ok) return res.status(401).json({ error: '邮箱或密码错误' });
+    const token = generateToken();
+    await sql`INSERT INTO sessions (token, user_id, created_at) VALUES (${token}, ${user.id}, now())`;
+    res.json({
+      token,
+      user: { id: user.id, email: user.email, name: user.name, emails: JSON.parse(String(user.emails || '[]')) },
+    });
+  }, req, res)
+);
+
+app.post('/api/logout', (req, res) =>
+  handle(async () => {
+    const auth = req.headers['authorization'] || '';
+    const token = auth.startsWith('Bearer ') ? auth.slice(7).trim() : '';
+    if (token) await sql`DELETE FROM sessions WHERE token = ${token}`;
+    res.json({ ok: true });
   }, req, res)
 );
 
 app.post('/api/checkin', (req, res) =>
   handle(async () => {
-    const id = String((req.body || {}).id || '').trim();
-    if (!id) return res.status(400).json({ error: '缺少 id' });
+    const user = await getUserByToken(req);
+    if (!user) return res.status(401).json({ error: '未登录' });
     await ensureTable();
     const updated = await sql`
       UPDATE users SET last_checkin = now(), alerted = false, alert_sent_at = NULL
-      WHERE id = ${id} RETURNING last_checkin
+      WHERE id = ${user.id} RETURNING last_checkin
     `;
-    if (updated.length === 0) return res.status(404).json({ error: '未找到该用户' });
-    const lastCheckin = updated[0].last_checkin
+    const lastCheckin = updated[0] && updated[0].last_checkin
       ? new Date(updated[0].last_checkin).toISOString()
       : null;
     res.json({ ok: true, lastCheckin });
@@ -129,24 +202,22 @@ app.post('/api/checkin', (req, res) =>
 
 app.get('/api/status', (req, res) =>
   handle(async () => {
-    const id = String(req.query.id || '').trim();
-    if (!id) return res.status(400).json({ error: '缺少 id' });
     await ensureTable();
-    const rows = await sql`SELECT * FROM users WHERE id = ${id}`;
-    if (rows.length === 0) return res.status(404).json({ error: '未找到该用户' });
-    const u = rows[0];
-    const lastCheckin = u.last_checkin ? new Date(u.last_checkin) : null;
-    const createdAt = new Date(u.created_at);
+    const user = await getUserByToken(req);
+    if (!user) return res.status(401).json({ error: '未登录' });
+    const lastCheckin = user.last_checkin ? new Date(user.last_checkin) : null;
+    const createdAt = new Date(user.created_at);
     const baseline = lastCheckin || createdAt;
     const safeUntil = new Date(baseline.getTime() + ALERT_AFTER_HOURS * 3600000);
     const hoursLeft = Math.max(0, (safeUntil.getTime() - Date.now()) / 3600000);
     res.json({
-      id: u.id,
-      name: u.name,
-      emails: JSON.parse(String(u.emails || '[]')),
+      id: user.id,
+      email: user.email,
+      name: user.name,
+      emails: JSON.parse(String(user.emails || '[]')),
       lastCheckin: lastCheckin ? lastCheckin.toISOString() : null,
       createdAt: createdAt.toISOString(),
-      alerted: !!u.alerted,
+      alerted: !!user.alerted,
       safeUntil: safeUntil.toISOString(),
       hoursLeft,
     });
@@ -155,29 +226,23 @@ app.get('/api/status', (req, res) =>
 
 app.post('/api/update', (req, res) =>
   handle(async () => {
+    const user = await getUserByToken(req);
+    if (!user) return res.status(401).json({ error: '未登录' });
     const body = req.body || {};
-    const id = String(body.id || '').trim();
     const name = String(body.name || '').trim().slice(0, 50);
     const emails = normalizeEmails(body.emails);
-    if (!id) return res.status(400).json({ error: '缺少 id' });
     await ensureTable();
-    const updated = await sql`
-      UPDATE users SET name = ${name}, emails = ${JSON.stringify(emails)}
-      WHERE id = ${id} RETURNING id
-    `;
-    if (updated.length === 0) return res.status(404).json({ error: '未找到该用户' });
-    res.json({ ok: true, id, name, emails });
+    await sql`UPDATE users SET name = ${name}, emails = ${JSON.stringify(emails)} WHERE id = ${user.id}`;
+    res.json({ ok: true, id: user.id, name, emails });
   }, req, res)
 );
 
 app.post('/api/test-email', (req, res) =>
   handle(async () => {
-    const id = String((req.body || {}).id || '').trim();
-    if (!id) return res.status(400).json({ error: '缺少 id' });
+    const user = await getUserByToken(req);
+    if (!user) return res.status(401).json({ error: '未登录' });
     await ensureTable();
-    const rows = await sql`SELECT emails FROM users WHERE id = ${id}`;
-    if (rows.length === 0) return res.status(404).json({ error: '未找到该用户' });
-    const emails = JSON.parse(String(rows[0].emails || '[]'));
+    const emails = JSON.parse(String(user.emails || '[]'));
     if (emails.length === 0) return res.status(400).json({ error: '尚未设置联系人邮箱' });
     await sendTestEmail(emails[0]);
     res.json({ ok: true, to: emails[0] });
@@ -190,7 +255,6 @@ function startServer(port = 3377) {
       resolve({ port, url: `http://127.0.0.1:${port}` });
     });
     server.on('error', (err) => {
-      // 端口被占用时自动尝试下一个端口
       if (err && err.code === 'EADDRINUSE') {
         resolve(startServer(port + 1));
       }
