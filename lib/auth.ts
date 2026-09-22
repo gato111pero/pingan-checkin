@@ -36,3 +36,11 @@ export async function getUserByToken(req: Request): Promise<Record<string, unkno
   `;
   return rows.length ? (rows[0] as Record<string, unknown>) : null;
 }
+
+/** 判断用户是否为管理员（邮箱匹配 ADMIN_EMAIL）。 */
+export function isAdmin(user: Record<string, unknown> | null): boolean {
+  if (!user) return false;
+  const adminEmail = (process.env.ADMIN_EMAIL || '').trim().toLowerCase();
+  if (!adminEmail) return false;
+  return String(user.email || '').toLowerCase() === adminEmail;
+}

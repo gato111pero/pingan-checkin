@@ -12,6 +12,17 @@ interface Status {
   alerted: boolean;
   safeUntil: string;
   hoursLeft: number;
+  isAdmin: boolean;
+}
+
+interface AdminUser {
+  id: string;
+  email: string;
+  name: string;
+  emails: string[];
+  lastCheckin: string | null;
+  createdAt: string;
+  alerted: boolean;
 }
 
 type Phase = 'loading' | 'auth' | 'setup' | 'dashboard';
@@ -50,6 +61,8 @@ export default function Home() {
   const [emails, setEmails] = useState<string[]>(['', '', '']);
   const [editOpen, setEditOpen] = useState(false);
   const [now, setNow] = useState(() => Date.now());
+  const [adminUsers, setAdminUsers] = useState<AdminUser[] | null>(null);
+  const [adminBusy, setAdminBusy] = useState(false);
 
   async function api(path: string, opts: RequestInit = {}) {
     const headers: Record<string, string> = {
@@ -222,6 +235,36 @@ export default function Home() {
       setError((err as Error).message);
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function loadAdminUsers() {
+    setAdminBusy(true);
+    setError('');
+    try {
+      const data = await api('/api/admin/users');
+      setAdminUsers(data.users);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setAdminBusy(false);
+    }
+  }
+
+  async function runAlertCheck() {
+    setAdminBusy(true);
+    setError('');
+    setMsg('');
+    try {
+      const data = await api('/api/admin/check', { method: 'POST' });
+      const okCount = data.results.filter((r: { ok: boolean }) => r.ok).length;
+      setMsg(`✅ 检查完成：共 ${data.checked} 人待处理，成功发送 ${okCount} 封预警邮件`);
+      const usersData = await api('/api/admin/users');
+      setAdminUsers(usersData.users);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setAdminBusy(false);
     }
   }
 
@@ -413,6 +456,39 @@ export default function Home() {
             </div>
             <div className="id-box">当前账号：{status.email}</div>
           </div>
+
+          {status.isAdmin && (
+            <div className="card">
+              <h2>管理后台</h2>
+              <div className="row-between">
+                <button className="small-link" onClick={loadAdminUsers} disabled={adminBusy}>
+                  {adminUsers ? '刷新用户列表' : '查看所有用户'}
+                </button>
+                <button className="small-link" onClick={runAlertCheck} disabled={adminBusy}>
+                  手动执行预警检查
+                </button>
+              </div>
+              {adminUsers &&
+                (adminUsers.length === 0 ? (
+                  <p className="hint">暂无用户</p>
+                ) : (
+                  <ul className="contact-list">
+                    {adminUsers.map((u) => (
+                      <li key={u.id} style={{ display: 'block' }}>
+                        <div>
+                          <strong>{u.email || '(无邮箱)'}</strong>
+                          {u.name ? ` · ${u.name}` : ''}
+                          {u.alerted ? ' · ⚠️已预警' : ''}
+                        </div>
+                        <div className="hint">
+                          联系人 {u.emails.length} 位 · 上次签到 {fmt(u.lastCheckin)}
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                ))}
+            </div>
+          )}
 
           <button className="btn secondary" onClick={handleLogout}>
             退出登录

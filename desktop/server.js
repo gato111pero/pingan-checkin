@@ -113,6 +113,31 @@ async function sendTestEmail(to) {
   });
 }
 
+async function sendAlertEmail({ to, name, lastCheckin }) {
+  const display = name ? `「${name}」` : '您关注的人';
+  const lastText = lastCheckin
+    ? `上次签到时间：${lastCheckin.toLocaleString('zh-CN', { hour12: false })}`
+    : '对方在设置后尚未完成过签到';
+  await transporter.sendMail({
+    from: `平安签到 <${config.smtp.from || config.smtp.user}>`,
+    to: to.join(', '),
+    subject: `⚠️【平安签到】预警：${display}已连续两天未签到`,
+    text: [
+      '您好，',
+      '',
+      '这是一封由「平安签到」自动发送的预警邮件。',
+      '',
+      `${display} 已连续两天（48 小时）未完成每日签到，可能遇到了意外情况。`,
+      '',
+      lastText,
+      '',
+      '请尽快通过电话或其他方式联系确认其安全。',
+      '',
+      '—— 平安签到（系统自动发送，请勿直接回复）',
+    ].join('\n'),
+  });
+}
+
 const app = express();
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
@@ -135,6 +160,39 @@ async function getUserByToken(req) {
     SELECT u.* FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token = ${token}
   `;
   return rows.length ? rows[0] : null;
+}
+
+function isAdmin(user) {
+  if (!user) return false;
+  const adminEmail = (config.adminEmail || '').trim().toLowerCase();
+  if (!adminEmail) return false;
+  return String(user.email || '').toLowerCase() === adminEmail;
+}
+
+async function runAlertCheck() {
+  await ensureTable();
+  const rows = await sql`
+    SELECT * FROM users
+    WHERE alerted = false
+      AND COALESCE(last_checkin, created_at) < now() - (${ALERT_AFTER_HOURS} || ' hours')::interval
+  `;
+  const results = [];
+  for (const u of rows) {
+    const emails = JSON.parse(String(u.emails || '[]'));
+    if (emails.length === 0) continue;
+    try {
+      await sendAlertEmail({
+        to: emails,
+        name: u.name || undefined,
+        lastCheckin: u.last_checkin ? new Date(u.last_checkin) : null,
+      });
+      await sql`UPDATE users SET alerted = true, alert_sent_at = now() WHERE id = ${u.id}`;
+      results.push({ id: u.id, email: u.email || '', ok: true });
+    } catch (e) {
+      results.push({ id: u.id, email: u.email || '', ok: false, error: (e && e.message) || String(e) });
+    }
+  }
+  return { checked: rows.length, results };
 }
 
 app.post('/api/register', (req, res) =>
@@ -220,6 +278,7 @@ app.get('/api/status', (req, res) =>
       alerted: !!user.alerted,
       safeUntil: safeUntil.toISOString(),
       hoursLeft,
+      isAdmin: isAdmin(user),
     });
   }, req, res)
 );
@@ -246,6 +305,36 @@ app.post('/api/test-email', (req, res) =>
     if (emails.length === 0) return res.status(400).json({ error: '尚未设置联系人邮箱' });
     await sendTestEmail(emails[0]);
     res.json({ ok: true, to: emails[0] });
+  }, req, res)
+);
+
+app.get('/api/admin/users', (req, res) =>
+  handle(async () => {
+    const user = await getUserByToken(req);
+    if (!user) return res.status(401).json({ error: '未登录' });
+    if (!isAdmin(user)) return res.status(403).json({ error: '无权限' });
+    await ensureTable();
+    const rows = await sql`SELECT id, email, name, emails, last_checkin, created_at, alerted FROM users ORDER BY created_at DESC`;
+    const users = rows.map((u) => ({
+      id: u.id,
+      email: u.email,
+      name: u.name,
+      emails: JSON.parse(String(u.emails || '[]')),
+      lastCheckin: u.last_checkin ? new Date(u.last_checkin).toISOString() : null,
+      createdAt: new Date(u.created_at).toISOString(),
+      alerted: !!u.alerted,
+    }));
+    res.json({ users });
+  }, req, res)
+);
+
+app.post('/api/admin/check', (req, res) =>
+  handle(async () => {
+    const user = await getUserByToken(req);
+    if (!user) return res.status(401).json({ error: '未登录' });
+    if (!isAdmin(user)) return res.status(403).json({ error: '无权限' });
+    const result = await runAlertCheck();
+    res.json(result);
   }, req, res)
 );
 

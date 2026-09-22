@@ -1,5 +1,6 @@
 {
   "databaseUrl": "postgresql://user:password@host/dbname?sslmode=require",
+  "adminEmail": "你的管理员邮箱@qq.com",
   "smtp": {
     "host": "smtp.qq.com",
     "port": 465,

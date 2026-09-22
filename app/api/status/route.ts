@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { ensureTable, ALERT_AFTER_HOURS } from '@/lib/db';
-import { getUserByToken } from '@/lib/auth';
+import { getUserByToken, isAdmin } from '@/lib/auth';
 
 export const dynamic = 'force-dynamic';
 
@@ -29,6 +29,7 @@ export async function GET(req: Request) {
       alerted: Boolean(user.alerted),
       safeUntil: safeUntil.toISOString(),
       hoursLeft,
+      isAdmin: isAdmin(user),
     });
   } catch (e) {
     return NextResponse.json({ error: (e as Error).message }, { status: 500 });

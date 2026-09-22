@@ -15,6 +15,8 @@ const state = {
   emails: ['', '', ''],
   email: '',
   password: '',
+  adminUsers: null,
+  adminBusy: false,
 };
 
 function fmt(dateStr) {
@@ -205,6 +207,39 @@ async function handleTestEmail() {
   }
 }
 
+async function loadAdminUsers() {
+  state.adminBusy = true;
+  setBanner(null, '');
+  render();
+  try {
+    const data = await api('/api/admin/users');
+    state.adminUsers = data.users;
+  } catch (err) {
+    setBanner('error', err.message);
+  } finally {
+    state.adminBusy = false;
+    render();
+  }
+}
+
+async function runAlertCheck() {
+  state.adminBusy = true;
+  setBanner(null, '');
+  render();
+  try {
+    const data = await api('/api/admin/check', { method: 'POST' });
+    const okCount = data.results.filter((r) => r.ok).length;
+    setBanner('msg', `✅ 检查完成：共 ${data.checked} 人待处理，成功发送 ${okCount} 封预警邮件`);
+    const usersData = await api('/api/admin/users');
+    state.adminUsers = usersData.users;
+  } catch (err) {
+    setBanner('error', err.message);
+  } finally {
+    state.adminBusy = false;
+    render();
+  }
+}
+
 function openEdit() {
   if (!state.status) return;
   state.name = state.status.name || '';
@@ -330,12 +365,26 @@ function renderDashboard() {
       <div class="id-box">当前账号：${escapeHtml(s.email || '')}</div>
     </div>
 
+    ${s.isAdmin ? `
+    <div class="card">
+      <h2>管理后台</h2>
+      <div class="row-between">
+        <button class="small-link" id="admin-users-btn" ${state.adminBusy ? 'disabled' : ''}>${state.adminUsers ? '刷新用户列表' : '查看所有用户'}</button>
+        <button class="small-link" id="admin-check-btn" ${state.adminBusy ? 'disabled' : ''}>手动执行预警检查</button>
+      </div>
+      ${state.adminUsers ? (state.adminUsers.length === 0 ? '<p class="hint">暂无用户</p>' : `<ul class="contact-list">${state.adminUsers.map((u) => `<li style="display:block"><div><strong>${escapeHtml(u.email || '(无邮箱)')}</strong>${u.name ? ' · ' + escapeHtml(u.name) : ''}${u.alerted ? ' · ⚠️已预警' : ''}</div><div class="hint">联系人 ${u.emails.length} 位 · 上次签到 ${fmt(u.lastCheckin)}</div></li>`).join('')}</ul>`) : ''}
+    </div>` : ''}
+
     <button class="btn secondary" id="logout-btn">退出登录</button>`;
 
   document.getElementById('checkin-btn').addEventListener('click', handleCheckin);
   document.getElementById('edit-btn').addEventListener('click', openEdit);
   document.getElementById('test-btn').addEventListener('click', handleTestEmail);
   document.getElementById('logout-btn').addEventListener('click', handleLogout);
+  if (s.isAdmin) {
+    document.getElementById('admin-users-btn').addEventListener('click', loadAdminUsers);
+    document.getElementById('admin-check-btn').addEventListener('click', runAlertCheck);
+  }
 }
 
 function renderEdit() {
